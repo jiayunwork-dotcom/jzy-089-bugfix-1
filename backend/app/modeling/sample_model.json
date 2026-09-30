@@ -1,0 +1,189 @@
+{
+  "tables": [
+    {
+      "name": "customers",
+      "label": "客户",
+      "schema_name": "biz",
+      "primary_key": "id",
+      "columns": [
+        {"name": "id", "data_type": "integer", "label": "客户ID"},
+        {"name": "name", "data_type": "text", "label": "客户名称"},
+        {"name": "region", "data_type": "text", "label": "大区"},
+        {"name": "province", "data_type": "text", "label": "省份"},
+        {"name": "city", "data_type": "text", "label": "城市"},
+        {"name": "segment", "data_type": "text", "label": "客户分层"},
+        {"name": "created_at", "data_type": "date", "label": "建档日期"}
+      ]
+    },
+    {
+      "name": "products",
+      "label": "商品",
+      "schema_name": "biz",
+      "primary_key": "id",
+      "columns": [
+        {"name": "id", "data_type": "integer", "label": "商品ID"},
+        {"name": "name", "data_type": "text", "label": "商品名称"},
+        {"name": "category", "data_type": "text", "label": "品类"},
+        {"name": "brand", "data_type": "text", "label": "品牌"},
+        {"name": "list_price", "data_type": "number", "label": "标价"},
+        {"name": "cost", "data_type": "number", "label": "成本"},
+        {"name": "launch_date", "data_type": "date", "label": "上架日期"}
+      ]
+    },
+    {
+      "name": "orders",
+      "label": "订单",
+      "schema_name": "biz",
+      "primary_key": "id",
+      "columns": [
+        {"name": "id", "data_type": "integer", "label": "订单ID"},
+        {"name": "customer_id", "data_type": "integer", "label": "客户ID"},
+        {"name": "order_date", "data_type": "date", "label": "下单日期"},
+        {"name": "status", "data_type": "text", "label": "订单状态"},
+        {"name": "channel", "data_type": "text", "label": "渠道"},
+        {"name": "total_amount", "data_type": "number", "label": "订单总额"},
+        {"name": "discount", "data_type": "number", "label": "折扣"}
+      ]
+    },
+    {
+      "name": "order_items",
+      "label": "订单明细",
+      "schema_name": "biz",
+      "primary_key": "id",
+      "columns": [
+        {"name": "id", "data_type": "integer", "label": "明细ID"},
+        {"name": "order_id", "data_type": "integer", "label": "订单ID"},
+        {"name": "product_id", "data_type": "integer", "label": "商品ID"},
+        {"name": "quantity", "data_type": "integer", "label": "数量"},
+        {"name": "unit_price", "data_type": "number", "label": "成交单价"}
+      ]
+    },
+    {
+      "name": "payments",
+      "label": "支付",
+      "schema_name": "biz",
+      "primary_key": "id",
+      "columns": [
+        {"name": "id", "data_type": "integer", "label": "支付ID"},
+        {"name": "order_id", "data_type": "integer", "label": "订单ID"},
+        {"name": "method", "data_type": "text", "label": "支付方式"},
+        {"name": "amount", "data_type": "number", "label": "支付金额"},
+        {"name": "paid_at", "data_type": "date", "label": "支付日期"}
+      ]
+    }
+  ],
+  "relations": [
+    {
+      "id": "rel_orders_customers",
+      "label": "订单 -> 客户",
+      "left_table": "orders",
+      "left_column": "customer_id",
+      "right_table": "customers",
+      "right_column": "id",
+      "cardinality": "N:1"
+    },
+    {
+      "id": "rel_order_items_orders",
+      "label": "订单明细 -> 订单",
+      "left_table": "order_items",
+      "left_column": "order_id",
+      "right_table": "orders",
+      "right_column": "id",
+      "cardinality": "N:1"
+    },
+    {
+      "id": "rel_order_items_products",
+      "label": "订单明细 -> 商品",
+      "left_table": "order_items",
+      "left_column": "product_id",
+      "right_table": "products",
+      "right_column": "id",
+      "cardinality": "N:1"
+    },
+    {
+      "id": "rel_payments_orders",
+      "label": "支付 -> 订单",
+      "left_table": "payments",
+      "left_column": "order_id",
+      "right_table": "orders",
+      "right_column": "id",
+      "cardinality": "N:1"
+    }
+  ],
+  "dimensions": [
+    {"id": "dim_customer_region", "name": "客户大区", "table": "customers", "column": "region", "data_type": "text", "hierarchy_id": "h_geo", "level_index": 0},
+    {"id": "dim_customer_province", "name": "客户省份", "table": "customers", "column": "province", "data_type": "text", "hierarchy_id": "h_geo", "level_index": 1},
+    {"id": "dim_customer_city", "name": "客户城市", "table": "customers", "column": "city", "data_type": "text", "hierarchy_id": "h_geo", "level_index": 2},
+    {"id": "dim_customer_segment", "name": "客户分层", "table": "customers", "column": "segment", "data_type": "text"},
+    {"id": "dim_product_category", "name": "商品品类", "table": "products", "column": "category", "data_type": "text", "hierarchy_id": "h_product", "level_index": 0},
+    {"id": "dim_product_brand", "name": "品牌", "table": "products", "column": "brand", "data_type": "text", "hierarchy_id": "h_product", "level_index": 1},
+    {"id": "dim_product_name", "name": "商品", "table": "products", "column": "name", "data_type": "text", "hierarchy_id": "h_product", "level_index": 2},
+    {"id": "dim_order_year", "name": "下单年份", "table": "orders", "expression": "DATE_TRUNC('year', order_date)", "data_type": "date", "hierarchy_id": "h_date", "level_index": 0},
+    {"id": "dim_order_quarter", "name": "下单季度", "table": "orders", "expression": "DATE_TRUNC('quarter', order_date)", "data_type": "date", "hierarchy_id": "h_date", "level_index": 1},
+    {"id": "dim_order_month", "name": "下单月份", "table": "orders", "expression": "DATE_TRUNC('month', order_date)", "data_type": "date", "hierarchy_id": "h_date", "level_index": 2},
+    {"id": "dim_order_date", "name": "下单日期", "table": "orders", "column": "order_date", "data_type": "date", "hierarchy_id": "h_date", "level_index": 3},
+    {"id": "dim_order_status", "name": "订单状态", "table": "orders", "column": "status", "data_type": "text"},
+    {"id": "dim_order_channel", "name": "下单渠道", "table": "orders", "column": "channel", "data_type": "text"},
+    {"id": "dim_payment_method", "name": "支付方式", "table": "payments", "column": "method", "data_type": "text"}
+  ],
+  "hierarchies": [
+    {"id": "h_geo", "name": "地区层级", "dimension_ids": ["dim_customer_region", "dim_customer_province", "dim_customer_city"]},
+    {"id": "h_product", "name": "商品层级", "dimension_ids": ["dim_product_category", "dim_product_brand", "dim_product_name"]},
+    {"id": "h_date", "name": "时间层级", "dimension_ids": ["dim_order_year", "dim_order_quarter", "dim_order_month", "dim_order_date"]}
+  ],
+  "measures": [
+    {"id": "m_order_total", "name": "订单总额", "table": "orders", "agg": "sum", "column": "total_amount"},
+    {"id": "m_order_count", "name": "订单数", "table": "orders", "agg": "count_distinct", "column": "id"},
+    {"id": "m_avg_order", "name": "平均订单额", "table": "orders", "agg": "avg", "column": "total_amount"},
+    {"id": "m_qty", "name": "销量", "table": "order_items", "agg": "sum", "column": "quantity"},
+    {"id": "m_sales", "name": "销售额", "table": "order_items", "agg": "sum", "expression": "quantity * unit_price"},
+    {"id": "m_payment_amount", "name": "支付金额", "table": "payments", "agg": "sum", "column": "amount"},
+    {
+      "id": "m_pending_amount",
+      "name": "待支付订单额",
+      "table": "orders",
+      "agg": "sum",
+      "column": "total_amount",
+      "filter": "status = 'pending'"
+    }
+  ],
+  "calculated_fields": [
+    {
+      "id": "cf_line_amount",
+      "name": "明细金额",
+      "table": "order_items",
+      "expression": "quantity * unit_price",
+      "data_type": "number"
+    },
+    {
+      "id": "cf_unit_gross_profit",
+      "name": "单件毛利",
+      "table": "products",
+      "expression": "list_price - cost",
+      "data_type": "number"
+    },
+    {
+      "id": "cf_gross_profit",
+      "name": "毛利额",
+      "table": "order_items",
+      "expression": "unit_price * quantity - cost * quantity",
+      "data_type": "number",
+      "join_tables": ["products"]
+    },
+    {
+      "id": "cf_gross_margin",
+      "name": "毛利率",
+      "table": "order_items",
+      "expression": "IF(line_amount > 0, (unit_price * quantity - cost * quantity) / line_amount, 0)",
+      "data_type": "number",
+      "join_tables": ["products"]
+    },
+    {
+      "id": "cf_customer_name_tag",
+      "name": "客户标签",
+      "table": "customers",
+      "expression": "CONCAT(UPPER(segment), '-', city)",
+      "data_type": "text"
+    }
+  ]
+}
