@@ -48,11 +48,13 @@ async def execute_generated(pool: "asyncpg.Pool",
                 f"SET LOCAL statement_timeout = {config.STATEMENT_TIMEOUT_MS}")
             stmt = await conn.prepare(query.sql)
             records = await stmt.fetch(*query.params)
+            # 列元数据必须在连接释放前取出（连接归还池后 stmt 即失效）
+            attributes = stmt.get_attributes()
 
     columns = [
         {"key": c.name.strip('"'), "name": _label(c.name, query),
-         "data_type": _type_name(c.type_name)}
-        for c in stmt.get_attributes()
+         "data_type": _type_name(c.type.name if c.type else None)}
+        for c in attributes
     ]
     rows = [list(rec.values()) for rec in records[:effective_limit]]
     return QueryResult(

@@ -50,9 +50,9 @@ class ModelStore:
     async def save(self, model: ModelSpec) -> None:
         async with self._pool.acquire() as conn:
             await conn.execute(
-                "UPDATE meta.model_definition SET doc = $2::jsonb, "
+                "UPDATE meta.model_definition SET doc = $1::jsonb, "
                 "updated_at = now() WHERE id = 1",
-                1, json.dumps(model.model_dump(), ensure_ascii=False),
+                json.dumps(model.model_dump(), ensure_ascii=False),
             )
         self._cache = model
 

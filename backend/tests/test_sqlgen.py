@@ -45,9 +45,10 @@ def test_cross_table_join_covers_all_referenced_tables(gen):
     # join_order 给出的逻辑 JOIN 路径：每张表恰好一次
     assert len(out.joined_tables) == len(set(out.joined_tables))
     # 逻辑连接路径（生成树）里每个非根表恰好一条 LEFT JOIN
+    # （表名按模型登记的模式全限定："biz"."表"）
     logical = out.sql.split(") b")[0]  # 去重派生表会在子查询里复用同一路径
     for t in wanted:
-        assert len(re.findall(rf'(?:FROM|LEFT JOIN) "{t}"',
+        assert len(re.findall(rf'(?:FROM|LEFT JOIN) "biz"\."{t}"',
                               logical)) == 1, (t, out.sql)
 
 

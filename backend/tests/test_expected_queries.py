@@ -38,7 +38,8 @@ def test_case_a_single_table():
                             op="in", value=["web", "app"])],
     ))
     sql = out.sql
-    assert re.search(r'FROM "orders"', sql)
+    # 表名按模型登记的模式全限定（"biz"."orders"）
+    assert re.search(r'FROM "biz"\."orders"', sql)
     assert "JOIN" not in sql.upper()
     assert re.search(
         r'\("orders"\."channel" IN \(\$1, \$2\)\)', sql)
@@ -56,7 +57,7 @@ def test_case_b_many_to_one_path():
     ))
     assert out.joined_tables == ["order_items", "orders", "customers"]
     assert out.fanout_tables == []
-    assert sql_count(out.sql, r'LEFT JOIN "(\w+)"') == 2
+    assert sql_count(out.sql, r'LEFT JOIN "biz"\."(\w+)"') == 2
 
 
 # --- 用例 C：1:N 放大，品类 x 订单总额，必须去重 ------------------------
@@ -66,8 +67,9 @@ def test_case_c_fanout_orders_total_by_category():
         measures=["m_order_total"],
     ))
     assert out.fanout_tables == ["orders"]
-    # 去重内层：DISTINCT 品类 + 订单主键 + 金额
-    assert re.search(r'SELECT DISTINCT "products"\."category", '
+    # 去重内层：DISTINCT 品类（显式别名供外层引用）+ 订单主键 + 金额
+    assert re.search(r'SELECT DISTINCT "products"\."category" '
+                     r'AS "dim_product_category", '
                      r'"orders"\."id" AS "__pk", '
                      r'"orders"\."total_amount" AS "__v_m_order_total"',
                      out.sql)

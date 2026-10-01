@@ -9,7 +9,9 @@
    "按主键去重的派生表"聚合，避免 SUM 被 JOIN 重复计数；
 4. 字段投放顺序决定 SELECT / GROUP BY 顺序，同样输入逐字节稳定；
 5. 下钻只追加更细层级，过滤与度量不变；
-6. 所有字面量只以 $n 参数占位出现，SQL 文本里永不内联用户输入。
+6. 所有字面量只以 $n 参数占位出现，SQL 文本里永不内联用户输入；
+7. 表名一律按模型登记的模式写成全限定名（"模式"."表"），不依赖
+   会话级 search_path——建模界面可以从任意模式导入表，查询自包含。
 """
 from __future__ import annotations
 
@@ -80,7 +82,6 @@ class _Ctx:
     edges: List[JoinEdge]
     join_order: List[str]
     where: str
-    having: str
 
 
 class SqlGenerator:
@@ -98,11 +99,21 @@ class SqlGenerator:
                 for d in spec.group_dimensions()]
         measures = [self._compile_measure(mid, params)
                     for mid in spec.measures]
+        # 度量筛选引用了未拖入数值区的度量：作为隐藏度量一并编译，
+        # 让它的聚合在语句里可引用（不进入输出列）
+        hidden: List[_Measure] = []
+        seen = {m.id for m in measures}
+        for f in spec.measure_filters():
+            if f.target not in seen:
+                seen.add(f.target)
+                hidden.append(self._compile_measure(f.target, params))
+        all_measures = measures + hidden
+        by_id = {m.id: m for m in all_measures}
 
         wanted: Set[str] = set()
         for d in dims:
             wanted.update(d.tables)
-        for m in measures:
+        for m in all_measures:
             wanted.update(m.tables)
         for f in spec.filters:
             wanted.update(self._filter_tables(f))
@@ -111,17 +122,18 @@ class SqlGenerator:
         wanted.add(root)
         edges = self.graph.spanning_tree(root, wanted) if len(wanted) > 1 else []
         join_order = [root] + [e.child for e in edges]
-        risky = self._fanout_measure_tables(measures, edges)
+        risky = self._fanout_measure_tables(all_measures, edges)
 
         where = self._build_where(spec.dimension_filters(), params)
-        having = self._build_having(spec, measures, params)
-        ctx = _Ctx(params, edges, join_order, where, having)
+        ctx = _Ctx(params, edges, join_order, where)
 
         if risky:
             sql, cols = self._render_with_dedup(
-                spec, dims, measures, edges, join_order, risky, ctx)
+                spec, dims, measures, all_measures, edges, join_order,
+                risky, ctx)
         else:
-            sql, cols = self._render_flat(spec, dims, measures, ctx)
+            having = self._build_having(spec, by_id, params)
+            sql, cols = self._render_flat(spec, dims, measures, ctx, having)
         return GeneratedQuery(
             sql=sql, params=params, columns=cols,
             joined_tables=join_order, fanout_tables=sorted(risky))
@@ -132,13 +144,14 @@ class SqlGenerator:
         dim = self._compile_dimension(dim_id, params)
         lines = [
             f'SELECT DISTINCT {dim.sql_fragment} AS "value"',
-            f'FROM "{dim.tables[0]}"',
+            f"FROM {self._qname(dim.tables[0])}",
         ]
         # 表达式维度可能依赖多张表
         wanted = set(dim.tables)
         if len(wanted) > 1:
             for e in self.graph.spanning_tree(dim.tables[0], wanted):
-                lines.append(f"LEFT JOIN \"{e.child}\" ON {e.on_clause()}")
+                lines.append(f"LEFT JOIN {self._qname(e.child)} "
+                             f"ON {e.on_clause()}")
         lines.append(f'WHERE {dim.sql_fragment} IS NOT NULL')
         lines.append(f'ORDER BY "{ "value" }"')
         params.append(min(max(int(limit), 1), 1000))
@@ -149,6 +162,10 @@ class SqlGenerator:
         )
 
     # ================= 元素编译 =================
+    def _qname(self, table: str) -> str:
+        """物理表的全限定名：模式以模型里登记的为准。"""
+        return self.model.table(table).qname()
+
     def _scope(self, owning_table: str) -> Dict[str, FieldRef]:
         return build_scope(self.model, owning_table)
 
@@ -253,16 +270,13 @@ class SqlGenerator:
             parts.append(operator_sql(target, f, params))
         return " AND ".join(parts)
 
-    def _build_having(self, spec: QuerySpec, measures: List[_Measure],
+    def _build_having(self, spec: QuerySpec, by_id: Dict[str, _Measure],
                       params: List[object]) -> str:
-        by_id = {m.id: m for m in measures}
+        """平坦形态下的度量筛选：直接对聚合表达式落 HAVING。"""
         parts: List[str] = []
         for f in spec.measure_filters():
-            m = by_id.get(f.target)
-            if m is None:
-                # 被筛选的度量没拖进数值区：仍编译它用于 HAVING
-                m = self._compile_measure(f.target, params)
-            parts.append(operator_sql(self._agg_expr(m), f, params))
+            parts.append(
+                operator_sql(self._agg_expr(by_id[f.target]), f, params))
         return " AND ".join(parts)
 
     def _agg_expr(self, m: _Measure) -> str:
@@ -309,21 +323,21 @@ class SqlGenerator:
 
     # ================= 渲染：普通形态 =================
     def _render_flat(self, spec: QuerySpec, dims: List[_Dim],
-                     measures: List[_Measure], ctx: _Ctx
+                     measures: List[_Measure], ctx: _Ctx, having: str
                      ) -> Tuple[str, List[ResultColumn]]:
         items = [d.sql_fragment for d in dims]
         items += [f"{self._agg_expr(m)} AS {alias(m.id)}" for m in measures]
         lines = ["SELECT " + ", ".join(items),
-                 f'FROM "{ctx.join_order[0]}"']
+                 f"FROM {self._qname(ctx.join_order[0])}"]
         for e in ctx.edges:
-            lines.append(f"LEFT JOIN \"{e.child}\" ON {e.on_clause()}")
+            lines.append(f"LEFT JOIN {self._qname(e.child)} ON {e.on_clause()}")
         if ctx.where:
             lines.append(f"WHERE {ctx.where}")
         if dims:
             lines.append("GROUP BY " + ", ".join(
                 str(i + 1) for i in range(len(dims))))
-        if ctx.having:
-            lines.append(f"HAVING {ctx.having}")
+        if having:
+            lines.append(f"HAVING {having}")
         if dims:
             lines.append("ORDER BY " + ", ".join(
                 str(i + 1) for i in range(len(dims))))
@@ -333,23 +347,28 @@ class SqlGenerator:
 
     # ================= 渲染：去重派生表形态 =================
     def _render_with_dedup(self, spec: QuerySpec, dims: List[_Dim],
-                           measures: List[_Measure], edges: List[JoinEdge],
+                           measures: List[_Measure],
+                           all_measures: List[_Measure],
+                           edges: List[JoinEdge],
                            join_order: List[str], risky: Set[str],
                            ctx: _Ctx
                            ) -> Tuple[str, List[ResultColumn]]:
-        safe = [m for m in measures if m.table not in risky]
-        risky_list = [m for m in measures if m.table in risky]
-        dim_sql = [d.sql_fragment for d in dims]
+        safe = [m for m in all_measures if m.table not in risky]
+        risky_list = [m for m in all_measures if m.table in risky]
+        # 维度在派生表内一律显式起别名，子查询之外只按别名引用：
+        # 裸投影的输出列名随表达式形态变化（列名 / date_trunc / ?column?），
+        # 外层继续写 "表"."列" 会落空（missing FROM-clause entry）
+        dim_select = [f"{d.sql_fragment} AS {alias(d.id)}" for d in dims]
 
-        # 基础子查询：维度 + 安全度量
-        base_items = list(dim_sql)
+        # 基础子查询：维度 + 安全度量（含筛选用到但未拖入的隐藏度量）
+        base_items = list(dim_select)
         base_items += [f"{self._agg_expr(m)} AS {alias(m.id)}" for m in safe]
         if not base_items:
             base_items = ["1 AS \"__one\""]
         base = ["SELECT " + ", ".join(base_items),
-                f'FROM "{join_order[0]}"']
+                f"FROM {self._qname(join_order[0])}"]
         for e in edges:
-            base.append(f"LEFT JOIN \"{e.child}\" ON {e.on_clause()}")
+            base.append(f"LEFT JOIN {self._qname(e.child)} ON {e.on_clause()}")
         if ctx.where:
             base.append(f"WHERE {ctx.where}")
         if dims:
@@ -361,14 +380,16 @@ class SqlGenerator:
         for m in risky_list:
             by_table.setdefault(m.table, []).append(m)
 
-        outer_measures: List[Tuple[str, str]] = []  # (measure_id, 限定列)
+        # 度量 id -> 外层可引用的限定列（b."..." 或 rN."..."）
+        location: Dict[str, str] = {
+            m.id: f"b.{alias(m.id)}" for m in safe}
         extra_joins: List[str] = []
         for idx, (table, ms) in enumerate(sorted(by_table.items()), start=1):
             dt = f"r{idx}"
             pk = self.model.table(table).primary_key
-            inner_items = list(dim_sql)
+            inner_items = list(dim_select)
             inner_items.append(f'"{table}"."{pk}" AS "__pk"')
-            sub_items = list(dim_sql)
+            sub_items = [alias(d.id) for d in dims]
             for m in ms:
                 if m.agg == "count" and not m.base_sql:
                     raw = "1"
@@ -395,21 +416,25 @@ class SqlGenerator:
                 if flag:
                     agg += f" FILTER (WHERE {flag})"
                 sub_items.append(f"{agg} AS {alias(m.id)}")
-                outer_measures.append((m.id, f"{dt}.{alias(m.id)}"))
+                location[m.id] = f"{dt}.{alias(m.id)}"
 
             inner_sql = "\n".join([
                 "SELECT DISTINCT " + ", ".join(inner_items),
-                f'FROM "{join_order[0]}"',
-                *[f"LEFT JOIN \"{e.child}\" ON {e.on_clause()}" for e in edges],
+                f"FROM {self._qname(join_order[0])}",
+                *[f"LEFT JOIN {self._qname(e.child)} ON {e.on_clause()}"
+                  for e in edges],
             ] + ([f"WHERE {ctx.where}"] if ctx.where else []))
-            sub = "\n".join([
+            sub_lines = [
                 "SELECT " + ", ".join(sub_items),
                 "FROM (",
                 indent(inner_sql, "  "),
                 ") __dedup",
-                "GROUP BY " + (", ".join(str(i + 1) for i in range(len(dims)))
-                               if dims else "1"),
-            ])
+            ]
+            # 无维度时整表一组，不能再 GROUP BY（首列已是聚合）
+            if dims:
+                sub_lines.append("GROUP BY " + ", ".join(
+                    str(i + 1) for i in range(len(dims))))
+            sub = "\n".join(sub_lines)
             if dims:
                 on = " AND ".join(
                     f"{dt}.{alias(d.id)} IS NOT DISTINCT FROM b.{alias(d.id)}"
@@ -419,24 +444,35 @@ class SqlGenerator:
             extra_joins.append(
                 f"LEFT JOIN (\n{indent(sub, '  ')}\n) {dt} ON {on}")
 
-        # 外层 SELECT：维度 + 度量（严格按投放顺序取列）
-        safe_ids = {m.id: f"b.{alias(m.id)}" for m in safe}
-        risky_ids = dict(outer_measures)
+        # 外层 SELECT：维度 + 度量（严格按投放顺序取列；隐藏度量只算不取）
         select_items = [f"b.{alias(d.id)}" for d in dims]
         for m in measures:
-            select_items.append(safe_ids.get(m.id) or risky_ids[m.id])
+            select_items.append(location[m.id])
 
         lines = ["SELECT " + ", ".join(select_items),
                  "FROM (",
                  indent("\n".join(base), "  "),
                  ") b"]
         lines += extra_joins
+        # 度量筛选：各分组聚合值已落在派生列上，在外层按列过滤
+        # （NULL 组被剔除，与 HAVING 语义一致）
+        measure_where = self._build_measure_where(spec, location, ctx.params)
+        if measure_where:
+            lines.append(f"WHERE {measure_where}")
         if dims:
             lines.append("ORDER BY " + ", ".join(
                 f"b.{alias(d.id)}" for d in dims))
         ctx.params.append(min(max(int(spec.limit), 1), 10_000))
         lines.append(f"LIMIT ${len(ctx.params)}")
         return "\n".join(lines), self._columns(dims, measures)
+
+    def _build_measure_where(self, spec: QuerySpec,
+                             location: Dict[str, str],
+                             params: List[object]) -> str:
+        """去重形态下的度量筛选：目标解析为外层派生列（b / rN）。"""
+        parts = [operator_sql(location[f.target], f, params)
+                 for f in spec.measure_filters()]
+        return " AND ".join(parts)
 
     def _columns(self, dims: List[_Dim],
                  measures: List[_Measure]) -> List[ResultColumn]:

@@ -107,6 +107,14 @@ export default function ResultTable({ model, result, onDrill }: Props) {
       <div className="table-foot">
         {result.row_count} 行
         {result.truncated && <span className="warn">（已达行数上限）</span>}
+        {result.fanout_tables.length > 0 && (
+          <span
+            className="warn"
+            title="度量已按主键去重，不会被一对多关联放大；但同一行记录可能同时属于多个维度值（如一张订单含多个品类），因此各分组的度量加起来可能超过全量总计——每一行各自成立，列不可直接加总。"
+          >
+            （已防一对多重复计数；同一记录可能计入多个分组，各组之和可能大于总计）
+          </span>
+        )}
       </div>
     </div>
   );

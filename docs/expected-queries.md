@@ -17,7 +17,12 @@ customers 1 ──< orders 1 ──< order_items >── 1 products
   毛利率（IF 条件判断 + 跨表字段）、客户标签（CONCAT/UPPER）
 
 下面 7 组是随测试固化的"拖拽意图 → 期望 SQL"。所有 `$n` 均为绑定参数，
-`tests/test_expected_queries.py` 对关键结构做断言。
+`tests/test_expected_queries.py` 对关键结构做断言；
+`tests/test_live_db.py` 把这些语句真正发给 Postgres 执行并核对结果数字。
+
+表名一律按模型登记的模式写成全限定名（`"biz"."orders"`），不依赖
+会话级 `search_path`；列引用里的 `"orders"."id"` 是相关名（Postgres 对
+`"biz"."orders"` 的默认别名即 `orders`），无需也不应带模式。
 
 ## A. 单表无 JOIN + IN 参数化
 
@@ -25,7 +30,7 @@ customers 1 ──< orders 1 ──< order_items >── 1 products
 
 ```sql
 SELECT "orders"."status", SUM("orders"."total_amount") AS "m_order_total"
-FROM "orders"
+FROM "biz"."orders"
 WHERE ("orders"."channel" IN ($1, $2))
 GROUP BY 1
 ORDER BY 1
@@ -39,9 +44,9 @@ LIMIT $3
 
 ```sql
 SELECT "customers"."region", SUM("order_items"."quantity") AS "m_qty"
-FROM "order_items"
-LEFT JOIN "orders" ON "order_items"."order_id" = "orders"."id"
-LEFT JOIN "customers" ON "orders"."customer_id" = "customers"."id"
+FROM "biz"."order_items"
+LEFT JOIN "biz"."orders" ON "order_items"."order_id" = "orders"."id"
+LEFT JOIN "biz"."customers" ON "orders"."customer_id" = "customers"."id"
 GROUP BY 1
 ORDER BY 1
 LIMIT $1
@@ -52,21 +57,21 @@ LIMIT $1
 ```sql
 SELECT b."dim_product_category", r1."m_order_total"
 FROM (
-  SELECT "products"."category"
-  FROM "orders"
-  LEFT JOIN "order_items" ON "orders"."id" = "order_items"."order_id"
-  LEFT JOIN "products" ON "order_items"."product_id" = "products"."id"
+  SELECT "products"."category" AS "dim_product_category"
+  FROM "biz"."orders"
+  LEFT JOIN "biz"."order_items" ON "orders"."id" = "order_items"."order_id"
+  LEFT JOIN "biz"."products" ON "order_items"."product_id" = "products"."id"
   GROUP BY 1
 ) b
 LEFT JOIN (
-  SELECT "products"."category", SUM("__v_m_order_total") AS "m_order_total"
+  SELECT "dim_product_category", SUM("__v_m_order_total") AS "m_order_total"
   FROM (
-    SELECT DISTINCT "products"."category",
+    SELECT DISTINCT "products"."category" AS "dim_product_category",
            "orders"."id" AS "__pk",
            "orders"."total_amount" AS "__v_m_order_total"
-    FROM "orders"
-    LEFT JOIN "order_items" ON "orders"."id" = "order_items"."order_id"
-    LEFT JOIN "products" ON "order_items"."product_id" = "products"."id"
+    FROM "biz"."orders"
+    LEFT JOIN "biz"."order_items" ON "orders"."id" = "order_items"."order_id"
+    LEFT JOIN "biz"."products" ON "order_items"."product_id" = "products"."id"
   ) __dedup
   GROUP BY 1
 ) r1 ON r1."dim_product_category" IS NOT DISTINCT FROM b."dim_product_category"
@@ -76,7 +81,10 @@ LIMIT $1
 
 要点：`orders.total_amount` 在 JOIN 明细后被复制；内层先按
 `(品类, orders.id, total_amount)` 去重，再在外层求和，结果与
-"直接对订单表按品类汇总"一致。
+"直接对订单表按品类汇总"一致。维度在派生表内一律显式起别名
+（`AS "dim_product_category"`），子查询之外只按别名引用——裸投影的
+输出列名随表达式形态变化，外层继续写 `"products"."category"` 会落空
+（missing FROM-clause entry）。
 
 ## D. 两个"多侧分支"：支付方式 × 销量 + 支付金额
 
@@ -106,7 +114,7 @@ LIMIT $1
 ```sql
 SELECT DATE_TRUNC($1, "orders"."order_date"),
        COUNT(DISTINCT "orders"."id") AS "m_order_count"
-FROM "orders"
+FROM "biz"."orders"
 WHERE ("orders"."status" = $2)
 GROUP BY 1
 ORDER BY 1
@@ -120,7 +128,7 @@ LIMIT $3
 SELECT DATE_TRUNC($1, "orders"."order_date"),
        DATE_TRUNC($2, "orders"."order_date"),
        COUNT(DISTINCT "orders"."id") AS "m_order_count"
-FROM "orders"
+FROM "biz"."orders"
 WHERE ("orders"."status" = $3)
 GROUP BY 1, 2
 ORDER BY 1, 2
@@ -137,17 +145,17 @@ LIMIT $4
 按品类汇总：过滤条件被提升为布尔标志列带进 DISTINCT 内层，外层只引用派生表列。
 
 ```sql
-SELECT "products"."category",
+SELECT "dim_product_category",
        SUM("__v_m_pending_amount") FILTER (WHERE "__f_m_pending_amount")
            AS "m_pending_amount"
 FROM (
-  SELECT DISTINCT "products"."category",
+  SELECT DISTINCT "products"."category" AS "dim_product_category",
          "orders"."id" AS "__pk",
          "orders"."total_amount" AS "__v_m_pending_amount",
          (("orders"."status" = $1)) AS "__f_m_pending_amount"
-  FROM "orders"
-  LEFT JOIN "order_items" ON ...
-  LEFT JOIN "products" ON ...
+  FROM "biz"."orders"
+  LEFT JOIN "biz"."order_items" ON ...
+  LEFT JOIN "biz"."products" ON ...
 ) __dedup
 GROUP BY 1
 -- params: ['pending', 200]
@@ -159,8 +167,8 @@ GROUP BY 1
 
 ```sql
 SELECT "customers"."segment", AVG("orders"."total_amount") AS "m_avg_order"
-FROM "orders"
-LEFT JOIN "customers" ON "orders"."customer_id" = "customers"."id"
+FROM "biz"."orders"
+LEFT JOIN "biz"."customers" ON "orders"."customer_id" = "customers"."id"
 GROUP BY 1
 HAVING (AVG("orders"."total_amount") BETWEEN $1 AND $2)
 ORDER BY 1
@@ -168,15 +176,42 @@ LIMIT $3
 -- params: [100, 1000, 200]
 ```
 
-## 期望结果（人工核对用）
+## H. 一对多组合下的度量筛选 → 外层 WHERE
 
-在样例数据上，几条关键查询的数值：
+拖入行：商品品类；数值：订单总额；筛选：订单总额 > 15000。
+去重形态下各分组的聚合值落在派生列上，度量筛选翻译成最外层
+`WHERE`（NULL 组被剔除，与 HAVING 语义一致）；筛选值仍是绑定参数，
+且每个占位参数都被语句引用：
+
+```sql
+SELECT b."dim_product_category", r1."m_order_total"
+FROM ( /* 同用例 C 的骨架 */ ) b
+LEFT JOIN ( /* 同用例 C 的去重派生表 */ ) r1
+  ON r1."dim_product_category" IS NOT DISTINCT FROM b."dim_product_category"
+WHERE (r1."m_order_total" > $1)
+ORDER BY b."dim_product_category"
+LIMIT $2
+-- params: [15000, 200]
+```
+
+被筛选的度量没拖进数值区时，它作为"隐藏度量"一并编译（进骨架或
+去重派生表参与计算），但不进入输出列。
+
+## 期望结果（自动化核对）
+
+`tests/test_live_db.py` 在样例数据上核对以下数字
+（`DRAGQUERY_TEST_DSN` 指向 Postgres 时自动执行）：
 
 | 查询 | 期望 |
 | --- | --- |
 | 全量订单总额 | 32274.00 |
 | 已支付（paid）订单总额 | 23828.00（pending/cancelled 不计） |
-| 按品类汇总订单总额之和 | 32274.00（用例 C 去重后与单表一致，不被明细放大） |
+| 大区 × 订单总额 | 华东 8047、华北 14496、华南 9324、西南 407 |
+| 品类 × 订单总额（用例 C） | 外设 15618、家具 4123、电脑 19724、配件 12533 |
+| 品类 × 订单总额 + 销量 | (15618, 13)、(4123, 4)、(19724, 4)、(12533, 31)，两列互不干扰 |
+| 品类 × 订单总额、筛 > 15000（用例 H） | 只剩 外设、电脑 两行 |
+| 支付方式 × 订单总额 | alipay 16878、card 15443、wechat 4700（无支付订单落入 NULL 组 8446） |
+| 各品类订单总额之和 | 51998 ≠ 32274：一张订单可含多个品类，该列不可加总（界面有提示） |
 | 全量支付金额合计 | 23828.00 |
 | 销量合计（quantity 求和） | 52 |
 | 支付方式 × 销量 + 支付金额（用例 D） | 两列各自正确，不因明细×支付交叉而翻倍 |
