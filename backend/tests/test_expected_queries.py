@@ -38,12 +38,13 @@ def test_case_a_single_table():
                             op="in", value=["web", "app"])],
     ))
     sql = out.sql
-    assert re.search(r'FROM "orders"', sql)
+    # 表名按模型登记的模式全限定
+    assert re.search(r'FROM "biz"\."orders"', sql)
     assert "JOIN" not in sql.upper()
     assert re.search(
-        r'\("orders"\."channel" IN \(\$1, \$2\)\)', sql)
+        r'\("biz"\."orders"\."channel" IN \(\$1, \$2\)\)', sql)
     assert re.search(
-        r'SUM\("orders"\."total_amount"\) AS "m_order_total"', sql)
+        r'SUM\("biz"\."orders"\."total_amount"\) AS "m_order_total"', sql)
     assert "GROUP BY 1" in sql
     assert out.params == ["web", "app", 200]
 
@@ -56,7 +57,7 @@ def test_case_b_many_to_one_path():
     ))
     assert out.joined_tables == ["order_items", "orders", "customers"]
     assert out.fanout_tables == []
-    assert sql_count(out.sql, r'LEFT JOIN "(\w+)"') == 2
+    assert sql_count(out.sql, r'LEFT JOIN "biz"\."(\w+)"') == 2
 
 
 # --- 用例 C：1:N 放大，品类 x 订单总额，必须去重 ------------------------
@@ -66,13 +67,18 @@ def test_case_c_fanout_orders_total_by_category():
         measures=["m_order_total"],
     ))
     assert out.fanout_tables == ["orders"]
-    # 去重内层：DISTINCT 品类 + 订单主键 + 金额
-    assert re.search(r'SELECT DISTINCT "products"\."category", '
-                     r'"orders"\."id" AS "__pk", '
-                     r'"orders"\."total_amount" AS "__v_m_order_total"',
-                     out.sql)
-    # 外层对去重结果求和
-    assert re.search(r'SUM\("__v_m_order_total"\) AS "m_order_total"', out.sql)
+    # 去重内层：DISTINCT 品类（起好输出别名）+ 订单主键 + 金额
+    assert re.search(
+        r'SELECT DISTINCT "biz"\."products"\."category" AS "dim_product_category", '
+        r'"biz"\."orders"\."id" AS "__pk", '
+        r'"biz"\."orders"\."total_amount" AS "__v_m_order_total"',
+        out.sql)
+    # 中层 FROM 的是 __dedup 派生表：维度只能引用其输出别名，
+    # 不能再写物理表名（那会触发 missing FROM-clause entry）
+    assert re.search(
+        r'SELECT "dim_product_category", '
+        r'SUM\("__v_m_order_total"\) AS "m_order_total"', out.sql)
+    assert '"biz"."products"."category", SUM(' not in out.sql
     # 所有表仅在逻辑生成树中出现一次（子查询复用除外：orders 出现 2 次属预期）
     assert out.joined_tables == ["orders", "order_items", "products"]
 
@@ -108,8 +114,8 @@ def test_case_e_date_drill():
     g = SqlGenerator(model)
     before, after = g.generate(base), g.generate(drilled)
     # WHERE 条件文本一致（参数序号随分组层级顺延，过滤值仍是 'paid'）
-    assert '("orders"."status" = $2)' in before.sql
-    assert '("orders"."status" = $3)' in after.sql
+    assert '("biz"."orders"."status" = $2)' in before.sql
+    assert '("biz"."orders"."status" = $3)' in after.sql
     assert before.params[-2:] == after.params[-2:] == ["paid", 200]
 
 
@@ -121,7 +127,7 @@ def test_case_f_measure_filter_with_dedup():
     ))
     # 过滤条件被提为布尔标志列
     assert re.search(
-        r'\(\("orders"\."status" = \$1\)\) AS "__f_m_pending_amount"',
+        r'\(\("biz"\."orders"\."status" = \$1\)\) AS "__f_m_pending_amount"',
         out.sql) or '"__f_m_pending_amount"' in out.sql
     assert 'FILTER (WHERE "__f_m_pending_amount")' in out.sql
     assert out.params[0] == "pending"
@@ -135,7 +141,10 @@ def test_case_g_numeric_between():
         filters=[FilterSpec(kind="measure", target="m_avg_order",
                             op="between", value=[100, 1000])],
     ))
-    assert "HAVING" in out.sql
+    # 度量过滤在聚合完成后对聚合列别名施加（扁平/去重两路径一致）
+    assert '"m_avg_order"' in out.sql
+    assert re.search(r'WHERE \("m_avg_order" BETWEEN \$\d+ AND \$\d+\)',
+                     out.sql)
     assert re.search(r"BETWEEN \$\d+ AND \$\d+", out.sql)
     assert 100 in out.params and 1000 in out.params
 

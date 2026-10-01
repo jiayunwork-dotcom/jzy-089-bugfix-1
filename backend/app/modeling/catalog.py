@@ -25,7 +25,8 @@ def column_index(model: ModelSpec) -> Dict[str, List[FieldRef]]:
         for c in t.columns:
             by_column.setdefault(c.name.lower(), []).append(
                 FieldRef(key=c.name.lower(), table=t.name,
-                         column=c.name, kind="column"))
+                         column=c.name, kind="column",
+                         schema_name=t.schema_name))
     return by_column
 
 

@@ -44,11 +44,11 @@ def test_cross_table_join_covers_all_referenced_tables(gen):
     assert set(out.joined_tables) == wanted
     # join_order 给出的逻辑 JOIN 路径：每张表恰好一次
     assert len(out.joined_tables) == len(set(out.joined_tables))
-    # 逻辑连接路径（生成树）里每个非根表恰好一条 LEFT JOIN
-    logical = out.sql.split(") b")[0]  # 去重派生表会在子查询里复用同一路径
+    # 逻辑连接路径（基础子查询）里每张表恰好一条全限定连接
+    base = out.sql[out.sql.index("FROM ("):out.sql.index(") b")]
     for t in wanted:
-        assert len(re.findall(rf'(?:FROM|LEFT JOIN) "{t}"',
-                              logical)) == 1, (t, out.sql)
+        assert len(re.findall(rf'(?:FROM|LEFT JOIN) "biz"\."{t}"',
+                              base)) == 1, (t, out.sql)
 
 
 def test_unreachable_table_relation_raises(model):
@@ -260,8 +260,9 @@ def test_measure_with_filter_emits_filter_clause(gen):
 def test_expression_measure(gen):
     # 销售额 = SUM(quantity * unit_price)：仅度量时保持单表无 JOIN
     out = gen.generate(q(measures=["m_sales"]))
-    # 表达式：不带多余括号的乘法
-    assert '"order_items"."quantity" * "order_items"."unit_price"' in out.sql
+    # 表达式：不带多余括号的乘法（全限定列）
+    assert ('"biz"."order_items"."quantity" * '
+            '"biz"."order_items"."unit_price"') in out.sql
     assert out.joined_tables == ["order_items"]
     assert "JOIN" not in out.sql.upper()
 
@@ -306,3 +307,15 @@ def test_invalid_filter_op_causted(gen):
                          measures=["m_order_total"], filters=[bad]))
     # NULL 参数化（IS NULL 语义应使用 is_null；这里只确保不拼接）
     assert None in out.params
+
+
+def test_no_dimension_fanout_has_no_group_by(gen):
+    # 仅度量且跨过一对多：全局合计是单行聚合，去重派生表中层不能出现
+    # GROUP BY（否则第 1 列是聚合表达式，Postgres 拒绝）
+    out = gen.generate(q(measures=["m_qty", "m_payment_amount"]))
+    assert "GROUP BY" not in out.sql.upper()
+    assert out.fanout_tables == ["order_items", "payments"]
+
+    out2 = gen.generate(q(measures=["m_order_total", "m_qty"]))
+    assert "GROUP BY" not in out2.sql.upper()
+    assert "ON TRUE" in out2.sql

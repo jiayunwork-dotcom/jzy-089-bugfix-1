@@ -84,36 +84,64 @@ npm install && npm run dev
 ```bash
 cd backend
 pip install -r requirements.txt
-python -m pytest                     # 88 passed
+python -m pytest                     # 110 passed
 ```
 
-测试不依赖数据库即可运行（内核、沙箱、守卫是纯函数模块）。测试文件与守护规则：
+纯函数测试（内核、沙箱、守卫、HTTP 文本层）不依赖数据库即可运行；
+另外有一组**真正连 Postgres 执行并按结果数字核对**的用例：
+
+```bash
+# 先起库（compose 默认把 55432 映射到本机）
+docker compose up -d db
+cd backend && python -m pytest tests/test_execution_db.py
+# 或指向任意 Postgres：
+TEST_DATABASE_URL=postgresql://u:p@host:5432/db python -m pytest tests/test_execution_db.py
+```
+
+没有可用数据库时 `test_execution_db.py` 整体 skip，其余测试照常通过。
+该组用例刻意使用**不含 `biz` 的默认 search_path**，一旦 SQL 退回裸表名
+（依赖会话设置）立即失败。
+
+测试文件与守护规则：
 
 | 文件 | 守住的规则 |
 | --- | --- |
 | `tests/test_sqlgen.py` | 单表无 JOIN；跨表覆盖且不重复连表；1:N 不重复计数；SQL 稳定；下钻只改分组；全部参数化 |
 | `tests/test_expected_queries.py` | 随产品附带的 7 组"拖拽 → 期望 SQL"固定核对用例 |
 | `tests/test_sql_syntax.py` | 所有典型形态生成的 SQL 通过 Postgres 方言解析 |
+| `tests/test_execution_db.py` | **真实连库执行**：模式全限定、品类/支付方式防重复计数数字、度量筛选、枚举下拉、下钻、只读 |
 | `tests/test_sandbox.py` | 白名单函数、禁系统/属性/下标调用、字面量参数化、错误位置 |
 | `tests/test_guard.py` | 只允许 SELECT，拒绝 INSERT/UPDATE/DDL/多语句/COPY/SET… |
 | `tests/test_http.py` | 路由、400 行为、表达式校验接口、模型存取 |
 
-详见 [`docs/expected-queries.md`](docs/expected-queries.md)。
+详见 [`docs/expected-queries.md`](docs/expected-queries.md) 与
+[`docs/design-decisions.md`](docs/design-decisions.md)。
 
 ## SQL 内核关键设计
 
-1. **JOIN 推导**：关联声明构成无向图；以首个度量表为根做 BFS 生成树，
+1. **模式定位（以模型登记为准）**：表归属哪个模式取自模型的
+   `TableSpec.schema_name`，所有 `FROM/JOIN` 与列引用一律发全限定名
+   `"模式"."表"."列"`，**不依赖会话 `search_path`**。因此建模页从别的模式
+   导入表也能直接查询，换库/换账号/换默认搜索路径都不需要人改会话设置。
+2. **JOIN 推导**：关联声明构成无向图；以首个度量表为根做 BFS 生成树，
    裁剪挂不到引用表集合的分支。单表查询不产生任何 JOIN，每张表在生成树中
    至多出现一次。
-2. **一对多防放大**：沿生成树逐边判断基数。只要存在会复制某度量表行的边，
+3. **一对多防放大**：沿生成树逐边判断基数。只要存在会复制某度量表行的边，
    该度量就改为 `SELECT DISTINCT 维度, 表主键, 度量基列 [, 过滤标志]`
    派生表，在外层对去重结果聚合；度量级过滤提升为布尔标志列，避免
    `FILTER` 引用穿透子查询作用域。多个"多侧分支"（如明细 + 支付）各自去重，
    互不相乘。
-3. **下钻**：`apply_drill` 只在分组中追加层级的下一级维度，过滤与度量原样保留；
+4. **度量过滤**：在聚合完成后包一层，对聚合列别名做 `WHERE`（扁平/去重
+   同一路径），每个过滤参数都被语句引用；`ORDER BY/LIMIT` 只放最外层，
+   保证先过滤后截断。
+5. **下钻**：`apply_drill` 只在分组中追加层级的下一级维度，过滤与度量原样保留；
    点击单元格产生的父级取值过滤由前端作为普通等值筛选加入。
-4. **参数化**：所有筛选字面量、表达式字面量、`LIMIT` 全部是 `$n` 绑定参数，
+6. **参数化**：所有筛选字面量、表达式字面量、`LIMIT` 全部是 `$n` 绑定参数，
    SQL 文本里永不出现用户输入。
-5. **纵深只读**：内核只产出 SELECT；执行前 `guard` 做关键字/多语句静态检查，
+7. **纵深只读**：内核只产出 SELECT；执行前 `guard` 做关键字/多语句静态检查，
    执行在 `SET TRANSACTION READ ONLY` 中进行，再叠加 `statement_timeout`
    与行数上限。
+
+> 跨品类归因口径（品类合计 51998 大于订单总额 32274）是否正确、要不要在
+> 界面提示，以及"全限定名 vs 搜索路径""去重派生表 vs 粒度预聚合"的取舍，
+> 见 [`docs/design-decisions.md`](docs/design-decisions.md)。

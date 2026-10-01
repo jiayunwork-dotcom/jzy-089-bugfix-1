@@ -51,7 +51,7 @@ class ModelStore:
         async with self._pool.acquire() as conn:
             await conn.execute(
                 "UPDATE meta.model_definition SET doc = $2::jsonb, "
-                "updated_at = now() WHERE id = 1",
+                "updated_at = now() WHERE id = $1::integer",
                 1, json.dumps(model.model_dump(), ensure_ascii=False),
             )
         self._cache = model

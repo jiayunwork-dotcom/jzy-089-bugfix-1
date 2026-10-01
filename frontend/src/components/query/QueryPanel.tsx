@@ -1,5 +1,5 @@
 import { useCallback, useMemo } from "react";
-import type { DragItem, ModelSpec } from "../../types";
+import type { DragItem, ModelSpec, QueryResponse } from "../../types";
 import { useQueryDraft } from "../../state/query";
 import FieldPalette from "./FieldPalette";
 import DropZone from "./DropZone";
@@ -10,6 +10,39 @@ import SqlPreview from "./SqlPreview";
 interface Props {
   model: ModelSpec;
   modelVersion: number;
+}
+
+/**
+ * 一对多防重复计数提示。
+ *
+ * 跨过一对多关联时，"一"侧度量（如订单总额）对每个维度值只计一次，因此
+ * 当同一个事实（一张订单）关联到多个维度成员（多个品类）时，它会在每个
+ * 成员下各出现一次——把各成员加总会超过不分组的全局总额（样例中品类合计
+ * 51998 vs 全部订单 32274）。这是分配口径，不是 bug，但必须让分析师知道
+ * 这些数字不能横向相加对账。
+ */
+function FanoutNotice({ model, result }: { model: ModelSpec; result: QueryResponse }) {
+  const tableLabels = result.fanout_tables
+    .map((t) => model.tables.find((x) => x.name === t)?.label ?? t);
+  const affectedMeasures = result.columns
+    .filter((c) =>
+      model.measures.some(
+        (m) => m.id === c.key && result.fanout_tables.includes(m.table)
+      )
+    )
+    .map((c) => c.label);
+
+  return (
+    <div className="banner info" title="一对多关联下的防重复计数口径说明">
+      本次查询跨过一对多关联（去重表：{tableLabels.join("、")}），
+      {affectedMeasures.length > 0
+        ? `「${affectedMeasures.join("」「")}」`
+        : "一侧度量"}
+      对每个维度值只计一次，避免被多侧行重复累加。注意：同一事实若关联
+      多个维度成员，会在各成员下分别计入，因此各维度值之间不可相加对账
+      （例如一张订单含多个品类时，品类合计会大于订单总额）。
+    </div>
+  );
 }
 
 export default function QueryPanel({ model, modelVersion }: Props) {
@@ -123,6 +156,10 @@ export default function QueryPanel({ model, modelVersion }: Props) {
         </div>
 
         {q.error && <div className="banner error">{q.error}</div>}
+
+        {q.result && q.result.fanout_tables.length > 0 && (
+          <FanoutNotice model={model} result={q.result} />
+        )}
 
         {q.result && (
           <>

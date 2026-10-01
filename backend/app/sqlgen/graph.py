@@ -38,13 +38,20 @@ class JoinEdge:
             return rel.cardinality in ("N:1", "N:N")
         return rel.cardinality in ("1:N", "N:N")
 
-    def on_clause(self) -> str:
+    def on_clause(self, qname=None) -> str:
+        """ON 等值条件。
+
+        qname(table_name) -> 全限定（含模式）表名；为 None 时退回裸表名
+        （仅旧测试/调试使用，生产路径总是传入模型解析器）。
+        """
         rel = self.relation
         if self.parent == rel.left_table:
             p_col, c_col = rel.left_column, rel.right_column
         else:
             p_col, c_col = rel.right_column, rel.left_column
-        return f'"{self.parent}"."{p_col}" = "{self.child}"."{c_col}"'
+        p_name = qname(self.parent) if qname is not None else f'"{self.parent}"'
+        c_name = qname(self.child) if qname is not None else f'"{self.child}"'
+        return f'{p_name}."{p_col}" = {c_name}."{c_col}"'
 
 
 class JoinGraph:

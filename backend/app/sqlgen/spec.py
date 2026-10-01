@@ -4,7 +4,8 @@
 - rows:     行维度（进 GROUP BY，结果表里的左侧分组列）
 - columns:  列维度（同样进 GROUP BY，前端做透视展开）
 - measures: 数值区的度量 / 可聚合计算字段（进聚合表达式）
-- filters:  筛选区条件（维度 -> WHERE；度量 -> HAVING）
+- filters:  筛选区条件（维度 -> WHERE；度量 -> 聚合后对外层聚合列过滤，
+            语义同 HAVING，但由生成器统一包一层 WHERE 引用聚合别名实现）
 """
 from __future__ import annotations
 

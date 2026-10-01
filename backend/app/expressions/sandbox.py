@@ -28,6 +28,22 @@ from typing import Dict, List, Optional, Set
 from . import functions as funcs
 
 
+def quote_ident(name: str) -> str:
+    """把标识符包成双引号引用（内部双引号转义）。模型登记的名字受校验器约束，
+    转义只是纵深防御。"""
+    return '"' + str(name).replace('"', '""') + '"'
+
+
+def quote_ref(schema: Optional[str], table: Optional[str],
+              column: Optional[str]) -> str:
+    """物理列引用：模式以模型登记为准，生成全限定名。
+
+    schema/table 为 None 的少数场景（测试桩）退回较短形式。
+    """
+    parts = [p for p in (schema, table, column) if p]
+    return ".".join(quote_ident(p) for p in parts)
+
+
 class ExpressionError(Exception):
     def __init__(self, message: str, line: int = 1, col: int = 0,
                  end_col: Optional[int] = None):
@@ -48,6 +64,7 @@ class FieldRef:
     table: Optional[str]
     column: Optional[str] = None
     kind: str = "column"           # "column" | "calc"
+    schema_name: Optional[str] = None  # 物理列所属模式（None 时退回不限定）
     calc_sql: Optional[str] = None
     calc_params: tuple = ()
     calc_refs: tuple = ()
@@ -317,7 +334,7 @@ class _Compiler:
         if t.value.lower() not in self.referenced:
             self.referenced.append(t.value.lower())
         if ref.kind == "column":
-            return f'"{ref.table}"."{ref.column}"'
+            return quote_ref(ref.schema_name, ref.table, ref.column)
         if t.value.lower() in self.compiling:
             raise ExpressionError(f"计算字段存在循环引用：{t.value}",
                                   t.line, t.col, t.end_col)
